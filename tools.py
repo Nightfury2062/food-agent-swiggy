@@ -1,38 +1,63 @@
-import json
+import asyncio
 from agents import function_tool
-from config import DRY_RUN, ORDER_TOOLS
+from config import DRY_RUN, ORDER_TOOL_NAME
+from memory import record_order
+from rag import search
+from schemas import SESSION
+from subagents import build_cart
+
+
+def build_order_args(payment_method: str) -> dict:
+    # TODO: match the order tool's inputSchema (from `python list_tools.py > tools.txt`)
+    return {"paymentMethod": payment_method}
 
 
 @function_tool
-def verify_price_math(
-    item_total: float,
-    discounts: float,
-    delivery_fee: float,
-    platform_fee: float,
-    taxes: float,
-    final_total: float,
-) -> str:
-    """Check that the price breakdown adds up to the final total. Call this on every cart before showing it to the user."""
-    expected = item_total - discounts + delivery_fee + platform_fee + taxes
-    diff = round(final_total - expected, 2)
-    return "OK" if abs(diff) < 1 else f"MISMATCH: expected {expected}, platform says {final_total} (diff {diff})"
+async def lookup_nutrition(dish: str) -> str:
+    """Approximate calories/protein for a dish from the local nutrition knowledge base (RAG)."""
+    hits = await search(dish, ["nutrition"], k=3)
+    return "\n".join(f"[match {s}] {t}" for s, t in hits) or "No nutrition data found."
 
 
-def make_place_order_tool(raw_server):
-    """raw_server is an unfiltered connection. Only this function can order, and only after a human types YES."""
+@function_tool
+async def recall_past_orders(query: str) -> str:
+    """Search the user's past orders and feedback (e.g. 'that spicy paneer thing', 'my usual')."""
+    hits = await search(query, ["order", "feedback"], k=4)
+    return "\n".join(f"[match {s}] {t}" for s, t in hits) or "Nothing relevant in history."
 
+
+def make_place_order_tool(pricer_srv, raw):
     @function_tool
-    async def place_order(summary: str, arguments_json: str) -> str:
-        """Place the order. summary: plain-English recap with restaurant, items, final total and address.
-        arguments_json: JSON arguments for the platform's order tool. The user is asked to confirm."""
-        print("\n=== ORDER CONFIRMATION ===")
-        print(summary)
-        answer = input("Type YES to place this order: ").strip()
-        if answer != "YES":
+    async def place_order(option_number: int, payment_method: str) -> str:
+        """Place the order for an option previously returned by find_meal_options.
+        The user is asked to confirm in the terminal; nothing is sent without that."""
+        entry = SESSION.options.get(option_number)
+        if not entry:
+            return "Unknown option. Call find_meal_options first."
+        cand, quote = entry
+        built = await build_cart(cand, pricer_srv, raw)         # Swiggy keeps one cart: rebuild it
+        if not built:
+            return "Could not rebuild the cart. Order NOT placed."
+        live, text = built
+        if abs(live.final_total - quote.final_total) > 5:
+            return (f"PRICE CHANGED: was Rs {quote.final_total}, now Rs {live.final_total}. "
+                    "Tell the user and ask again. Order NOT placed.")
+        print("\n=== ORDER CONFIRMATION (live cart from Swiggy, not written by the AI) ===")
+        print(text)
+        print(f"Payment: {payment_method}")
+        if SESSION.budget and live.final_total > SESSION.budget:
+            ans = await asyncio.to_thread(input, f"Over budget (Rs {SESSION.budget:.0f}). Type OVERRIDE: ")
+            if ans.strip() != "OVERRIDE":
+                return "User declined the over-budget order. Order NOT placed."
+        if (await asyncio.to_thread(input, "Type YES to place this order: ")).strip() != "YES":
             return "User declined. Order NOT placed."
         if DRY_RUN:
-            return "DRY_RUN is on, so the order was NOT actually placed."
-        result = await raw_server.call_tool(ORDER_TOOLS[0], json.loads(arguments_json))
-        return str(result)
+            await record_order(live.restaurant, live.items, live.final_total, payment_method, True)
+            return "DRY_RUN is on: order was NOT actually placed."
+        if ORDER_TOOL_NAME.startswith("REPLACE"):
+            return "ORDER_TOOL_NAME not configured. Order NOT placed."
+        result = await raw.call_tool(ORDER_TOOL_NAME, build_order_args(payment_method))
+        await record_order(live.restaurant, live.items, live.final_total, payment_method, False)
+        return "\n".join(c.text for c in result.content if hasattr(c, "text"))
 
     return place_order
