@@ -7,9 +7,11 @@ from schemas import SESSION
 from subagents import build_cart
 
 
-def build_order_args(payment_method: str) -> dict:
-    # TODO: match the order tool's inputSchema (from `python list_tools.py > tools.txt`)
-    return {"paymentMethod": payment_method}
+def build_order_args(payment_method: str, note: str = "") -> dict:
+    args = {"addressId": SESSION.address_id, "paymentMethod": "Cash"}
+    if note:
+        args["noteToRestaurant"] = note
+    return args
 
 
 @function_tool
@@ -28,9 +30,11 @@ async def recall_past_orders(query: str) -> str:
 
 def make_place_order_tool(pricer_srv, raw):
     @function_tool
-    async def place_order(option_number: int, payment_method: str) -> str:
+    async def place_order(option_number: int, payment_method: str, note_to_restaurant: str = "") -> str:
         """Place the order for an option previously returned by find_meal_options.
-        The user is asked to confirm in the terminal; nothing is sent without that."""
+        Only Cash on Delivery is supported. The user is asked to confirm in the terminal."""
+        if payment_method.strip().lower() not in {"cash", "cod", "cash on delivery"}:
+            return "This prototype supports Cash on Delivery only. Ask the user to choose COD."
         entry = SESSION.options.get(option_number)
         if not entry:
             return "Unknown option. Call find_meal_options first."
@@ -56,8 +60,15 @@ def make_place_order_tool(pricer_srv, raw):
             return "DRY_RUN is on: order was NOT actually placed."
         if ORDER_TOOL_NAME.startswith("REPLACE"):
             return "ORDER_TOOL_NAME not configured. Order NOT placed."
-        result = await raw.call_tool(ORDER_TOOL_NAME, build_order_args(payment_method))
+        try:    # the order tool expects the payment picker data to have been fetched
+            await raw.call_tool("get_payment_options", {"addressId": SESSION.address_id})
+        except Exception:
+            pass
+        result = await raw.call_tool(ORDER_TOOL_NAME, build_order_args(payment_method, note_to_restaurant))
+        out = "\n".join(c.text for c in result.content if hasattr(c, "text"))
+        if getattr(result, "isError", False):
+            return f"Swiggy rejected the order: {out}"
         await record_order(live.restaurant, live.items, live.final_total, payment_method, False)
-        return "\n".join(c.text for c in result.content if hasattr(c, "text"))
+        return out
 
     return place_order

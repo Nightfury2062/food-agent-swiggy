@@ -2,10 +2,12 @@ import re
 from schemas import Candidate, Quote
 
 
-async def cart_text(raw_server) -> str:
-    res = await raw_server.call_tool("get_food_cart", {})   # if this errors, pass the args from tools.txt
+async def cart_text(raw_server, address_id: str, restaurant_name: str = "") -> str:
+    args = {"addressId": address_id}
+    if restaurant_name:
+        args["restaurantName"] = restaurant_name
+    res = await raw_server.call_tool("get_food_cart", args)
     return "\n".join(c.text for c in res.content if hasattr(c, "text"))
-
 
 def _num(s: str) -> float:
     return float(s.replace(",", ""))

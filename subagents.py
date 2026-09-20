@@ -7,16 +7,26 @@ from config import MAX_PARALLEL_LLM
 from models import get_model
 from schemas import SESSION, Candidate
 
-SCOUT_INSTRUCTIONS = """You are a menu scout for Swiggy. Input: search_term, budget_inr (final payable, taxes
-add about 15 percent), veg_only, address_id. Call search_restaurants, then search_menu on at most 2 promising
-restaurants. For each pick a small set of items whose item total is at most 80 percent of the budget. If
-veg_only is true choose only items marked Veg. Use only ids and prices from tool results. Reply with ONLY JSON:
-{"candidates":[{"restaurant_id":"","restaurant_name":"","eta":"","items":[{"id":"","name":"","price":0,"qty":1,"veg":true}]}]}"""
+SCOUT_INSTRUCTIONS = """You are a menu scout for Swiggy. Input: search_term, budget_inr (final payable; taxes
+and fees add about 15 percent), veg_only, address_id.
+1. Call search_restaurants with query=<search_term> and addressId=<address_id>.
+2. For at most 2 promising restaurants, call search_menu with query=<search_term>, addressId=<address_id>,
+   restaurantIdOfAddedItem=<restaurant id>, and vegFilter=1 if veg_only is true, else 0.
+3. Choose a small set of items whose item total is at most 80 percent of the budget. Prefer items that need
+   no variant or addon choices. If an item does need a variant, copy the exact variant fields from the
+   search_menu result into cart_item.
+Use only ids and prices from tool results. Reply with ONLY JSON:
+{"candidates":[{"restaurant_id":"","restaurant_name":"","eta":"","items":[{"id":"","name":"","price":0,
+"qty":1,"veg":true,"cart_item":{"menu_item_id":"","quantity":1}}]}]}"""
 
-PRICER_INSTRUCTIONS = """You fill a Swiggy cart. Input is JSON with restaurant_id and items (id, qty). Call
-flush_food_cart first, then update_food_cart with exactly those items. Do not change anything.
-Reply with only DONE, or FAILED: <reason>."""
-
+PRICER_INSTRUCTIONS = """You fill a Swiggy cart and apply the best coupon. Input is JSON: address_id,
+restaurant_id, restaurant_name, cart_items.
+1. Call flush_food_cart.
+2. Call update_food_cart with restaurantId=<restaurant_id> and cartItems=<cart_items> exactly as given.
+3. Call fetch_food_coupons with restaurantId and addressId. Consider ONLY coupons valid for Cash on Delivery.
+   If one clearly lowers the payable amount, call apply_food_coupon once with couponCode and addressId.
+   If applying fails, ignore it.
+Never change the items. Reply with only DONE, or FAILED: <reason>."""
 
 def _json(text: str) -> dict:
     m = re.search(r"\{.*\}", text or "", re.S)
@@ -45,12 +55,15 @@ async def run_scout(term, budget, veg_only, address_id, scout_srv, sem):
 async def build_cart(cand: Candidate, pricer_srv, raw):
     agent = Agent(name="pricer", instructions=PRICER_INSTRUCTIONS,
                   model=get_model("fast"), mcp_servers=[pricer_srv])
-    payload = {"restaurant_id": cand.restaurant_id,
-               "items": [{"id": i.id, "qty": i.qty} for i in cand.items]}
-    res = await Runner.run(agent, json.dumps(payload), max_turns=8)
+    payload = {"address_id": SESSION.address_id,
+            "restaurant_id": cand.restaurant_id,
+            "restaurant_name": cand.restaurant_name,
+            "cart_items": [i.cart_item or {"menu_item_id": i.id, "quantity": i.qty}
+                            for i in cand.items]}
+    res = await Runner.run(agent, json.dumps(payload), max_turns=10)
     if "FAILED" in (res.final_output or "").upper():
         return None
-    text = await cart_text(raw)          # ground truth comes from Swiggy, parsed by code
+    text = await cart_text(raw, SESSION.address_id, cand.restaurant_name)
     quote = parse_cart(text)
     if not quote:
         return None
@@ -64,6 +77,7 @@ def make_find_options_tool(scout_srv, pricer_srv, raw):
                                 veg_only: bool, address_id: str) -> str:
         """Find and price real meal options. search_terms: 2-3 dish or cuisine keywords.
         budget_inr: max FINAL payable amount. Returns up to 3 audited quotes built from real Swiggy carts."""
+        SESSION.address_id = address_id
         sem = asyncio.Semaphore(MAX_PARALLEL_LLM)
         scouted = await asyncio.gather(
             *[run_scout(t, budget_inr, veg_only, address_id, scout_srv, sem) for t in search_terms[:3]],

@@ -9,7 +9,7 @@ class Item(BaseModel):
     price: float
     qty: int = 1
     veg: bool | None = None
-
+    cart_item: dict | None = None   # exact entry for update_food_cart's cartItems
 
 class Candidate(BaseModel):
     model_config = ConfigDict(coerce_numbers_to_str=True)
@@ -34,7 +34,7 @@ class Quote(BaseModel):
 @dataclass
 class Session:
     budget: float = 0.0
+    address_id: str = ""
     options: dict = field(default_factory=dict)   # option number -> (Candidate, Quote)
-
 
 SESSION = Session()

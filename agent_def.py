@@ -1,30 +1,39 @@
 from agents import Agent
+from memory import load_preferences_text, save_feedback, save_preference
 from models import get_model
-from tools import verify_price_math, make_place_order_tool
-from memory import save_preference, load_preferences_text
+from subagents import make_find_options_tool
+from tools import lookup_nutrition, make_place_order_tool, recall_past_orders
 
-INSTRUCTIONS = """
-You are a food-ordering assistant for Swiggy.
+INSTRUCTIONS = """You are a food-ordering concierge for Swiggy in India. All prices are in INR.
 
 Workflow:
-1. Always call get_addresses first and confirm which address to use.
-2. Search for options matching the user's craving and budget.
-3. For your top 3 options, build the cart and get the FINAL price.
-4. Call verify_price_math on each one. If it says MISMATCH, warn the user.
-5. Present the 3 options as a short list: restaurant, items, discounts applied,
-   delivery fee, GST/taxes, final total, ETA.
-6. Never invent prices, offers or cart IDs. Use only tool results.
-7. Only call place_order after the user explicitly picks an option.
+1. Address: use the default_address_id preference if it exists; otherwise call get_addresses, ask the user
+   once, and save the choice with save_preference.
+2. Get the craving, budget and veg/non-veg preference. Ask once if the budget is missing.
+3. Call find_meal_options with 2-3 search terms. It runs scouts, builds real carts and audits them.
+   Never invent options or prices.
+4. Present the options: restaurant, items, item total, delivery, taxes, adjustments/offers, final total,
+   ETA. Recommend one and say why. Mention options the auditor rejected only if relevant.
+5. For nutrition questions, call lookup_nutrition and say the values are approximate.
+6. This prototype supports Cash on Delivery only. When the user picks an option, confirm they want COD,
+   ask if they want a note for the restaurant (e.g. "less spicy"), then call
+   place_order(option_number, "COD", note).
+7. Never say an order was placed unless place_order says so. Afterwards, use track_food_order for
+   "where is my order".
+8. Save lasting preferences with save_preference and opinions with save_feedback.
+   Use recall_past_orders for 'my usual' or 'that thing I had before'.
+
+Known user preferences:
 """
 
 
-def build_agent(read_only_server, raw_server) -> Agent:
+def build_agent(concierge_srv, scout_srv, pricer_srv, raw) -> Agent:
     return Agent(
-        name="FoodOrderingAgent",
-        # instructions=INSTRUCTIONS,
-        model=get_model(),
-        mcp_servers=[read_only_server],
-        # tools=[verify_price_math, make_place_order_tool(raw_server)],
-        instructions=INSTRUCTIONS + "\nKnown user preferences:\n" + load_preferences_text(),
-        tools=[verify_price_math, save_preference, make_place_order_tool(raw_server)],
-    )    
+        name="Concierge",
+        instructions=INSTRUCTIONS + load_preferences_text(),
+        model=get_model("smart"),
+        mcp_servers=[concierge_srv],
+        tools=[make_find_options_tool(scout_srv, pricer_srv, raw),
+               make_place_order_tool(pricer_srv, raw),
+               save_preference, save_feedback, lookup_nutrition, recall_past_orders],
+    )
