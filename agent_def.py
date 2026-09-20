@@ -12,6 +12,10 @@ Workflow:
 2. Get the craving, budget and veg/non-veg preference. Ask once if the budget is missing.
 3. Call find_meal_options with 2-3 search terms. It runs scouts, builds real carts and audits them.
    Never invent options or prices.
+   Only say a restaurant is unavailable when search_restaurants explicitly returns no deliverable match.
+   A cart, parsing, audit, or other tool failure is an agent error, not proof of unavailability; explain it plainly.
+   If find_meal_options returns no options and failures, state that the matching restaurant was found but
+   a cart could not be built; do not retry in the same answer and do not suggest the restaurant is unavailable.
 4. Present the options: restaurant, items, item total, delivery, taxes, adjustments/offers, final total,
    ETA. Recommend one and say why. Mention options the auditor rejected only if relevant.
 5. For nutrition questions, call lookup_nutrition and say the values are approximate.
@@ -27,13 +31,13 @@ Known user preferences:
 """
 
 
-def build_agent(concierge_srv, scout_srv, pricer_srv, raw) -> Agent:
+def build_agent(concierge_srv, scout_srv, raw) -> Agent:
     return Agent(
         name="Concierge",
         instructions=INSTRUCTIONS + load_preferences_text(),
         model=get_model("smart"),
         mcp_servers=[concierge_srv],
-        tools=[make_find_options_tool(scout_srv, pricer_srv, raw),
-               make_place_order_tool(pricer_srv, raw),
+        tools=[make_find_options_tool(scout_srv, raw),
+               make_place_order_tool(raw),
                save_preference, save_feedback, lookup_nutrition, recall_past_orders],
     )

@@ -1,29 +1,41 @@
 import asyncio
+import sys
 import time
 from contextlib import AsyncExitStack
 import models
 import telemetry
-from agents import Runner
+from agents import Runner, RunHooks
 from agents.exceptions import MaxTurnsExceeded
 from agent_def import build_agent
 from config import DRY_RUN
 from memory import compact_history
-from mcp_servers import CONCIERGE_TOOLS, PRICER_TOOLS, SCOUT_TOOLS, swiggy_server
+from mcp_servers import CONCIERGE_TOOLS, SCOUT_TOOLS, swiggy_server
+
+class LogHooks(RunHooks):
+    @staticmethod
+    def _console(value) -> str:
+        encoding = sys.stdout.encoding or "utf-8"
+        return str(value).encode(encoding, errors="replace").decode(encoding)
+
+    async def on_tool_start(self, context, agent, tool):
+        print(f"  [tool] {tool.name}")
+
+    async def on_tool_end(self, context, agent, tool, result):
+        print(f"  [result] {self._console(result)[:800]}\n")
 
 
 async def main():
     async with AsyncExitStack() as stack:
         concierge = await stack.enter_async_context(swiggy_server(CONCIERGE_TOOLS))
         scout = await stack.enter_async_context(swiggy_server(SCOUT_TOOLS))
-        pricer = await stack.enter_async_context(swiggy_server(PRICER_TOOLS))
         raw = await stack.enter_async_context(swiggy_server(None))
 
-        for srv, allowed in ((concierge, CONCIERGE_TOOLS), (scout, SCOUT_TOOLS), (pricer, PRICER_TOOLS)):
+        for srv, allowed in ((concierge, CONCIERGE_TOOLS), (scout, SCOUT_TOOLS)):
             visible = {t.name for t in await srv.list_tools()}
             if not visible <= set(allowed):
                 raise SystemExit(f"UNSAFE: agent can see unapproved tools: {visible - set(allowed)}")
 
-        agent = build_agent(concierge, scout, pricer, raw)
+        agent = build_agent(concierge, scout, raw)
         history = []
         print(f"Food agent ready. Mode: {'DRY RUN (no real orders)' if DRY_RUN else 'LIVE (real orders!)'}")
         print("Type 'exit' to quit.\n")
@@ -36,7 +48,7 @@ async def main():
             models.usage_log.clear()
             t0 = time.time()
             try:
-                result = await Runner.run(agent, history, max_turns=15)
+                result = await Runner.run(agent, history, max_turns=15, hooks=LogHooks())
             except MaxTurnsExceeded:
                 print("\nagent> Hit the step limit. Try a narrower request.\n")
                 history.pop()

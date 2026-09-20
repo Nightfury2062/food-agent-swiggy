@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Item(BaseModel):
@@ -28,7 +28,7 @@ class Quote(BaseModel):
     other_adjustments: float   # negative = discount applied, positive = extra fee
     final_total: float
     eta: str | None = None
-    notes: list[str] = []      # any offer/discount lines Swiggy printed
+    notes: list[str] = Field(default_factory=list)  # any offer/discount lines Swiggy printed
 
 
 @dataclass

@@ -2,7 +2,6 @@ from agents.mcp import MCPServerStreamableHttp, create_static_tool_filter
 from swiggy_auth import get_swiggy_access_token
 
 SCOUT_TOOLS = ["search_restaurants", "search_menu"]
-PRICER_TOOLS = ["update_food_cart", "flush_food_cart", "fetch_food_coupons", "apply_food_coupon"]
 CONCIERGE_TOOLS = ["get_addresses", "get_payment_options", "track_food_order", "get_food_orders"]
 
 def swiggy_server(allowed: list[str] | None = None) -> MCPServerStreamableHttp:

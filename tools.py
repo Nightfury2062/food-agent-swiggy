@@ -8,7 +8,8 @@ from subagents import build_cart
 
 
 def build_order_args(payment_method: str, note: str = "") -> dict:
-    args = {"addressId": SESSION.address_id, "paymentMethod": "Cash"}
+    normalized = "Cash" if payment_method.strip().lower() in {"cash", "cod", "cash on delivery"} else payment_method
+    args = {"addressId": SESSION.address_id, "paymentMethod": normalized}
     if note:
         args["noteToRestaurant"] = note
     return args
@@ -28,7 +29,7 @@ async def recall_past_orders(query: str) -> str:
     return "\n".join(f"[match {s}] {t}" for s, t in hits) or "Nothing relevant in history."
 
 
-def make_place_order_tool(pricer_srv, raw):
+def make_place_order_tool(raw):
     @function_tool
     async def place_order(option_number: int, payment_method: str, note_to_restaurant: str = "") -> str:
         """Place the order for an option previously returned by find_meal_options.
@@ -39,9 +40,9 @@ def make_place_order_tool(pricer_srv, raw):
         if not entry:
             return "Unknown option. Call find_meal_options first."
         cand, quote = entry
-        built = await build_cart(cand, pricer_srv, raw)         # Swiggy keeps one cart: rebuild it
+        built, failure = await build_cart(cand, raw)  # Swiggy keeps one cart: rebuild it
         if not built:
-            return "Could not rebuild the cart. Order NOT placed."
+            return f"Could not rebuild the cart. Order NOT placed. Diagnostic: {failure}"
         live, text = built
         if abs(live.final_total - quote.final_total) > 5:
             return (f"PRICE CHANGED: was Rs {quote.final_total}, now Rs {live.final_total}. "
